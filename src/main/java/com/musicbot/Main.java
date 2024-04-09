@@ -1,60 +1,132 @@
 package com.musicbot;
 
-import java.util.Arrays;
 import java.util.HashMap;
-import com.sedmelluq.discord.lavaplayer.player.AudioPlayer;
+import java.util.Map;
+
+import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
 import com.sedmelluq.discord.lavaplayer.player.DefaultAudioPlayerManager;
 import com.sedmelluq.discord.lavaplayer.source.AudioSourceManagers;
-import com.sedmelluq.discord.lavaplayer.track.playback.NonAllocatingAudioFrameBuffer;
-import discord4j.core.DiscordClientBuilder;
-import discord4j.core.GatewayDiscordClient;
-import discord4j.core.event.domain.message.MessageCreateEvent;
-import discord4j.core.object.VoiceState;
-import discord4j.core.object.entity.Member;
-import discord4j.voice.AudioProvider;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
+import com.sedmelluq.discord.lavaplayer.track.AudioPlaylist;
+import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
 
-public class Main {
-    private static HashMap<String, Command> commands = new HashMap<>();
+import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.JDABuilder;
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
+import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.managers.AudioManager;
+import net.dv8tion.jda.api.requests.GatewayIntent;
 
-    static {
-        commands.put("ping", event -> event.getMessage().getChannel().flatMap(channel -> channel.createMessage("pong")).then());
+public class Main extends ListenerAdapter{
+    private final AudioPlayerManager playerManager;
+    private final Map<Long, GuildMusicManager> musicManagers;
+    public static void main(String[] args) {
+        JDA api = JDABuilder.createDefault(Config.TOKEN)
+                    .enableIntents(GatewayIntent.MESSAGE_CONTENT)
+                    .addEventListeners(new Main())
+                    .build();
     }
 
-    @SuppressWarnings("deprecation")
-    public static void main(String[] args) {
-        final AudioPlayerManager playerManager = new DefaultAudioPlayerManager();
-        playerManager.getConfiguration()
-            .setFrameBufferFactory(NonAllocatingAudioFrameBuffer::new);
+    private Main() {
+        this.playerManager = new DefaultAudioPlayerManager();
+        this.musicManagers = new HashMap<>();
+
         AudioSourceManagers.registerRemoteSources(playerManager);
-        final AudioPlayer player = playerManager.createPlayer();
-        AudioProvider provider = new LavaPlayerAudioProvider(player);
+        AudioSourceManagers.registerLocalSource(playerManager);
+    }
 
-        commands.put("join", event -> Mono.justOrEmpty(event.getMember())
-            .flatMap(Member::getVoiceState)
-            .flatMap(VoiceState::getChannel)
-            .flatMap(channel -> channel.join(spec -> spec.setProvider(provider)))
-            .then());
-        final TrackScheduler scheduler = new TrackScheduler(player);
-        commands.put("play", event -> Mono.justOrEmpty(event.getMessage().getContent())
-            .map(content -> Arrays.asList(content.split(" ")))
-            .doOnNext(command -> playerManager.loadItem(command.get(1), scheduler))
-            .then());
+    private synchronized GuildMusicManager getGuildAudioPlayer(Guild guild) {
+        long guildId = Long.parseLong(guild.getId());
+        GuildMusicManager musicManager = musicManagers.get(guildId);
 
-        final GatewayDiscordClient client = DiscordClientBuilder.create(Config.TOKEN)
-        .build()
-        .login()
-        .block();
+        if (musicManager == null) {
+            musicManager = new GuildMusicManager(playerManager);
+            musicManagers.put(guildId, musicManager);
+        }
 
-        client.getEventDispatcher().on(MessageCreateEvent.class)
-            .flatMap(event -> Mono.just(event.getMessage().getContent())
-                .flatMap(content -> Flux.fromIterable(commands.entrySet())
-                    .filter(entry -> content.startsWith('!' + entry.getKey()))
-                    .flatMap(entry -> entry.getValue().execute(event))
-                    .next())).subscribe();
+        guild.getAudioManager().setSendingHandler(musicManager.getSendHandler());
 
-        client.onDisconnect().block();
+        return musicManager;
+    }
+
+    @Override
+    public void onMessageReceived(MessageReceivedEvent event) {
+        String[] command = event.getMessage().getContentRaw().split(" ", 2);
+
+        if(command[0].equals("!play")) {
+            VoiceChannel voiceChannel = event.getMember().getVoiceState().getChannel().asVoiceChannel();
+            loadAndPlay(event.getChannel().asTextChannel(), command[1], voiceChannel);
+        }
+        else if(command[0].equals("!skip")) {
+            skip(event.getChannel().asTextChannel());
+        }
+        else if(command[0].equals("!queue")) {
+            String trackQueue = getQueue(event.getChannel().asTextChannel());
+            event.getChannel().asTextChannel().sendMessage(trackQueue).queue();
+        }
+    }
+
+    private void loadAndPlay(TextChannel textChannel, String trackUrl, VoiceChannel voiceChannel) {
+        GuildMusicManager guildMusicManager = getGuildAudioPlayer(textChannel.getGuild());
+
+        playerManager.loadItemOrdered(guildMusicManager, trackUrl, new AudioLoadResultHandler() {
+            @Override
+            public void trackLoaded(AudioTrack track) {
+                play(textChannel, guildMusicManager, track, voiceChannel);
+            }
+
+            @Override
+            public void playlistLoaded(AudioPlaylist playlist) {
+                for(AudioTrack track : playlist.getTracks()) {
+                    play(textChannel, guildMusicManager, track, voiceChannel);
+                }
+            }
+
+            @Override
+            public void noMatches() {
+                
+            }
+
+            @Override
+            public void loadFailed(FriendlyException exception) {
+                
+            }
+        });
+    }
+
+    private synchronized void play(TextChannel textChannel, GuildMusicManager guildMusicManager, AudioTrack track, VoiceChannel voiceChannel) {
+        Guild guild = textChannel.getGuild();
+        connectToVoiceChannel(guild.getAudioManager(), voiceChannel);
+        String text = guildMusicManager.scheduler.queue(track);
+        System.out.println(text);
+        textChannel.sendMessage(text).queue();
+    }
+
+    private void skip(TextChannel textChannel) {
+        GuildMusicManager musicManager = getGuildAudioPlayer(textChannel.getGuild());
+
+        String skipText = musicManager.scheduler.nextTrack();
+        if(skipText == null) {
+            textChannel.sendMessage("Nothing is playing").queue();
+        }
+        else {
+            textChannel.sendMessage("Skipped to next track").queue();
+        }
+    }
+    
+    private String getQueue(TextChannel textChannel) {
+        GuildMusicManager musicManager = getGuildAudioPlayer(textChannel.getGuild());
+        String trackList = musicManager.scheduler.queueToString();
+        return trackList;
+    }
+
+    private static void connectToVoiceChannel(AudioManager audioManager, VoiceChannel voiceChannel) {
+        if(!audioManager.isConnected()) {
+            audioManager.openAudioConnection(voiceChannel);
+        }
     }
 }

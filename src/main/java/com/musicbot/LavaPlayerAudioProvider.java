@@ -1,31 +1,49 @@
 package com.musicbot;
 
-import java.nio.ByteBuffer;
-import com.sedmelluq.discord.lavaplayer.format.StandardAudioDataFormats;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayer;
 import com.sedmelluq.discord.lavaplayer.track.playback.MutableAudioFrame;
-import discord4j.voice.AudioProvider;
 
-public class LavaPlayerAudioProvider extends AudioProvider{
-    private final AudioPlayer player;
-    private final MutableAudioFrame frame = new MutableAudioFrame();
+import java.nio.Buffer;
 
-    public LavaPlayerAudioProvider(final AudioPlayer player) {
-        super(
-            ByteBuffer.allocate(
-                StandardAudioDataFormats.DISCORD_OPUS.maximumChunkSize()
-            )
-        );
-        frame.setBuffer(getBuffer());
-        this.player = player;
+import net.dv8tion.jda.api.audio.AudioSendHandler;
+
+import java.nio.ByteBuffer;
+
+/**
+ * This is a wrapper around AudioPlayer which makes it behave as an AudioSendHandler for JDA. As JDA calls canProvide
+ * before every call to provide20MsAudio(), we pull the frame in canProvide() and use the frame we already pulled in
+ * provide20MsAudio().
+ */
+public class LavaPlayerAudioProvider implements AudioSendHandler {
+    private final AudioPlayer audioPlayer;
+    private final ByteBuffer buffer;
+    private final MutableAudioFrame frame;
+
+    /**
+     * @param audioPlayer Audio player to wrap.
+     */
+    public LavaPlayerAudioProvider(AudioPlayer audioPlayer) {
+        this.audioPlayer = audioPlayer;
+        this.buffer = ByteBuffer.allocate(1024);
+        this.frame = new MutableAudioFrame();
+        this.frame.setBuffer(buffer);
     }
 
     @Override
-    public boolean provide() {
-        final boolean didProvide = player.provide(frame);
-        if (didProvide) {
-            getBuffer().flip();
-        }
-        return didProvide;
+    public boolean canProvide() {
+        // returns true if audio was provided
+        return audioPlayer.provide(frame);
+    }
+
+    @Override
+    public ByteBuffer provide20MsAudio() {
+        // flip to make it a read buffer
+        ((Buffer) buffer).flip();
+        return buffer;
+    }
+
+    @Override
+    public boolean isOpus() {
+        return true;
     }
 }
