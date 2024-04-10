@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler;
+import com.sedmelluq.discord.lavaplayer.player.AudioPlayer;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
 import com.sedmelluq.discord.lavaplayer.player.DefaultAudioPlayerManager;
 import com.sedmelluq.discord.lavaplayer.source.AudioSourceManagers;
@@ -24,6 +25,18 @@ import net.dv8tion.jda.api.requests.GatewayIntent;
 public class Main extends ListenerAdapter{
     private final AudioPlayerManager playerManager;
     private final Map<Long, GuildMusicManager> musicManagers;
+    private final static Map<String, String> commandsInfo;
+
+    static {
+        commandsInfo = new HashMap<>();
+        commandsInfo.put("!play ", "!play track/playlist youtube url> - adds track/playlist to the queue");
+        commandsInfo.put("!skip", "skips the current track");
+        commandsInfo.put("!queue", "displays tracks in the queue");
+        commandsInfo.put("!pause", "pauses current track");
+        commandsInfo.put("!unpause", "unpauses current track");
+        commandsInfo.put("!track_info", "displays current track info");
+        commandsInfo.put("!help", "help");
+    }
     public static void main(String[] args) {
         JDA api = JDABuilder.createDefault(Config.TOKEN)
                     .enableIntents(GatewayIntent.MESSAGE_CONTENT)
@@ -57,16 +70,33 @@ public class Main extends ListenerAdapter{
     public void onMessageReceived(MessageReceivedEvent event) {
         String[] command = event.getMessage().getContentRaw().split(" ", 2);
 
-        if(command[0].equals("!play")) {
+        if(command[0].equals("!play") && command.length == 2) {
             VoiceChannel voiceChannel = event.getMember().getVoiceState().getChannel().asVoiceChannel();
             loadAndPlay(event.getChannel().asTextChannel(), command[1], voiceChannel);
         }
-        else if(command[0].equals("!skip")) {
+        else if(command[0].equals("!skip") && command.length == 1) {
             skip(event.getChannel().asTextChannel());
         }
-        else if(command[0].equals("!queue")) {
+        else if(command[0].equals("!queue") && command.length == 1) {
             String trackQueue = getQueue(event.getChannel().asTextChannel());
             event.getChannel().asTextChannel().sendMessage(trackQueue).queue();
+        }
+        else if(command[0].equals("!pause") && command.length == 1) {
+            pause(event.getGuild(), event.getChannel().asTextChannel());
+        }
+        else if(command[0].equals("!unpause") && command.length == 1) {
+            unpause(event.getGuild(), event.getChannel().asTextChannel());
+        }
+        else if(command[0].equals("!track_info") && command.length == 1) {
+            String trackInfo = getTrackInfo(event.getGuild());
+            event.getChannel().asTextChannel().sendMessage(trackInfo).queue();
+        }
+        else if(command[0].equals("!help") && command.length == 1) {
+            String info = "";
+            for(Map.Entry<String,String> commandInfo : commandsInfo.entrySet()) {
+                info += commandInfo.getKey() + " : " + commandInfo.getValue() + "\n"; 
+            }
+            event.getChannel().asTextChannel().sendMessage(info).queue();
         }
     }
 
@@ -88,12 +118,12 @@ public class Main extends ListenerAdapter{
 
             @Override
             public void noMatches() {
-                
+                textChannel.sendMessage("No matches: " + trackUrl).queue();
             }
 
             @Override
             public void loadFailed(FriendlyException exception) {
-                
+                textChannel.sendMessage("Load track failed").queue();
             }
         });
     }
@@ -102,7 +132,6 @@ public class Main extends ListenerAdapter{
         Guild guild = textChannel.getGuild();
         connectToVoiceChannel(guild.getAudioManager(), voiceChannel);
         String text = guildMusicManager.scheduler.queue(track);
-        System.out.println(text);
         textChannel.sendMessage(text).queue();
     }
 
@@ -122,6 +151,36 @@ public class Main extends ListenerAdapter{
         GuildMusicManager musicManager = getGuildAudioPlayer(textChannel.getGuild());
         String trackList = musicManager.scheduler.queueToString();
         return trackList;
+    }
+
+    private void pause(Guild guild, TextChannel channel) {
+        GuildMusicManager guildMusicManager = getGuildAudioPlayer(guild);
+        if(!guildMusicManager.player.isPaused() && guildMusicManager.player.getPlayingTrack() != null) {
+            guildMusicManager.player.setPaused(true);
+            channel.sendMessage("Track " + guildMusicManager.player.getPlayingTrack().getInfo().title + " paused").queue();
+        }
+    }
+
+    private void unpause(Guild guild, TextChannel channel) {
+        GuildMusicManager guildMusicManager = getGuildAudioPlayer(guild);
+        if(guildMusicManager.player.isPaused()) {
+            guildMusicManager.player.setPaused(false);
+            channel.sendMessage("Track " + guildMusicManager.player.getPlayingTrack().getInfo().title + " unpaused").queue();
+        }
+    }
+
+    private String getTrackInfo(Guild guild) {
+        GuildMusicManager guildMusicManager = getGuildAudioPlayer(guild);
+        AudioTrack track = guildMusicManager.player.getPlayingTrack();
+        if(track != null) {
+            return "Track info: " + "\n"
+                    + "\t author: " + track.getInfo().author + "\n"
+                    + "\t title: " + track.getInfo().title + "\n"
+                    + "\t url: " + track.getInfo().uri;
+        }
+        else {
+            return "Nothing is playing";
+        }
     }
 
     private static void connectToVoiceChannel(AudioManager audioManager, VoiceChannel voiceChannel) {

@@ -53,6 +53,7 @@ public final class TrackScheduler extends AudioEventAdapter {
  
     @Override
     public void onPlayerResume(AudioPlayer player) {
+
     }
     
     @Override
